@@ -1,0 +1,3 @@
+[submodule "PatchSTG"]
+	path = PatchSTG
+	url = https://github.com/LMissher/PatchSTG.git
