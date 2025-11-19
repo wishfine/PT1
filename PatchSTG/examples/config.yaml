@@ -1,0 +1,30 @@
+# 示例配置文件（中文说明）
+# 用途：避免在命令行逐一输入大量参数。配置文件中的键名若与脚本的 CLI 参数同名，将覆盖脚本默认值。
+
+# 数据源设置（本脚本仅支持 ODPS 流式读取）
+use_odps: true                # 是否使用 ODPS 流式读取（建议设为 true）
+odps_table: "your_project.your_table"   # 必填：ODPS 表名，例如 project.table
+odps_access_id: null         # 可选：ODPS access id（若不填请通过环境变量 ODPS_ACCESS_ID 提供）
+odps_access_key: null        # 可选：ODPS access key（若不填请通过环境变量 ODPS_ACCESS_KEY 提供）
+odps_project: null           # 可选：ODPS project（若不填请通过环境变量 ODPS_PROJECT 提供）
+odps_endpoint: null          # 可选：ODPS endpoint（若不填请通过环境变量 ODPS_ENDPOINT 提供）
+odps_limit: 2000             # 用于测试时限制读取行数（None 表示不限制）
+
+# 模型与训练相关
+use_topk: true               # 是否把 top-K 上游作为单独特征
+topk: 3                      # top-K 的 K 值
+use_log: true                # 是否对标签使用 log1p 变换
+split_method: "stratified_time"  # 可选：date 或 stratified_time（主要用于离线评估）
+
+# 流式训练控制（可按需要调整）
+batch_size: 2048
+val_frac: 0.02
+num_boost_round_first: 200
+num_boost_round_chunk: 10
+
+# 输出
+output_model: "models/lgbm_model_from_config.txt"
+save_metrics: "metrics/config_metrics.json"
+
+# 调试用：限制最大读取行数（与 odps_limit 可互斥使用）
+max_rows: 1000

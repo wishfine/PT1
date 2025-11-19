@@ -1,0 +1,10 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+pyyaml
+pyodps
+
+# 说明：此 requirements.txt 包含脚本运行需要的 Python 库。
+# - 若仅本地使用 CSV 测试：安装 pandas/numpy/scikit-learn/lightgbm 即可。
+# - 若使用 ODPS 流式读取，请额外安装 pyodps（已在此文件列出）。

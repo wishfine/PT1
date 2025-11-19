@@ -1,0 +1,9 @@
+# ODPS 流式 PatchSTG 训练参数配置
+# 请根据实际环境填写
+odps_table: autonavi_traffic_report.final_training_samples
+access_id: your_access_id
+access_key: your_access_key
+project: your_project_name
+endpoint: http://service.odps.aliyun.com/api
+batch_size: 128
+num_workers: 2

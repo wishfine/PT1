@@ -1,0 +1,25 @@
+# ODPS 流式 PatchSTG 训练参数配置
+# 注意：为了安全建议把 access_id/access_key 放到环境变量中（ODPS_ACCESS_ID/ODPS_ACCESS_KEY）
+project: 'autonavi_traffic_report'
+endpoint: 'http://service-corp.odps.aliyun-inc.com/api'
+odps_table: 'final_training_samples'
+access_id: '****'
+access_key: '****'
+batch_size: 128
+num_workers: 2
+# 测试配置（可选，用于快速测试）
+limit: 100
+test_limit: 50
+
+# 训练超参（可按需调整）
+epochs: 5
+lr: 0.001
+output_len: 1
+layers: 2
+input_dims: 8
+node_dims: 16
+time_dims: 4
+
+# checkpoints & logging
+ckpt_path: 'checkpoints/patchstg_epoch.pth'
+log: 'logs/train.log'
