@@ -194,7 +194,9 @@ def main():
 
         # 保存检查点 (确保父目录存在)
         ckpt = {'model_state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(), 'epoch': epoch}
-        ckpt_path = cfg.get('ckpt_path', f'checkpoint_epoch{epoch}.pth')
+        # 支持配置文件中的 {epoch} 占位符
+        ckpt_path_template = cfg.get('ckpt_path', f'checkpoint_epoch{epoch}.pth')
+        ckpt_path = ckpt_path_template.replace('{epoch}', str(epoch))
         try:
             ckpt_dir = os.path.dirname(ckpt_path) or '.'
             os.makedirs(ckpt_dir, exist_ok=True)

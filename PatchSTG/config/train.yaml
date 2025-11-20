@@ -5,14 +5,12 @@ endpoint: 'http://service-corp.odps.aliyun-inc.com/api'
 odps_table: 'final_training_samples'
 access_id: '****'
 access_key: '****'
-batch_size: 128
+batch_size: 1024
 num_workers: 2
-# 测试配置（可选，用于快速测试）
-limit: 100
-test_limit: 50
+
 
 # 训练超参（可按需调整）
-epochs: 5
+epochs: 100
 lr: 0.001
 output_len: 1
 layers: 2
@@ -21,5 +19,5 @@ node_dims: 16
 time_dims: 4
 
 # checkpoints & logging
-ckpt_path: 'checkpoints/patchstg_epoch.pth'
+ckpt_path: 'checkpoints/patchstg_epoch_{epoch}.pth'
 log: 'logs/train.log'
