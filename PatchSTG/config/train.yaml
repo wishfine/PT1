@@ -18,6 +18,10 @@ input_dims: 8
 node_dims: 16
 time_dims: 4
 
+# Early Stopping 参数
+early_stopping_patience: 5  # 连续多少个 epoch 没有改善就停止训练
+early_stopping_min_delta: 0.0001  # loss 至少要下降多少才算改善
+
 # checkpoints & logging
 ckpt_path: 'checkpoints/patchstg_epoch_{epoch}.pth'
 log: 'logs/train.log'

@@ -158,6 +158,12 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
+    # Early Stopping 参数
+    patience = cfg.get('early_stopping_patience', 10)  # 容忍多少个 epoch 没有改善
+    min_delta = cfg.get('early_stopping_min_delta', 1e-4)  # 最小改善阈值
+    best_loss = float('inf')
+    patience_counter = 0
+    
     # 训练循环
     model.train()
     for epoch in range(1, epochs+1):
@@ -191,6 +197,19 @@ def main():
         dt = time.time() - t0
         avg_loss = epoch_loss / max(1, n_batches)
         logging.info(f'Epoch {epoch} 完成: 平均 loss={avg_loss:.6f} 耗时={dt:.1f}s')
+
+        # Early Stopping 检查
+        if avg_loss < best_loss - min_delta:
+            best_loss = avg_loss
+            patience_counter = 0
+            logging.info(f'Loss 改善至 {best_loss:.6f}，重置 patience 计数器')
+        else:
+            patience_counter += 1
+            logging.info(f'Loss 未改善 ({patience_counter}/{patience})')
+            
+            if patience_counter >= patience:
+                logging.info(f'Early Stopping: {patience} 个 epoch 内 loss 未改善，停止训练')
+                break
 
         # 保存检查点 (确保父目录存在)
         ckpt = {'model_state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(), 'epoch': epoch}
