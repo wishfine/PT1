@@ -1,5 +1,6 @@
 import os
 import sys
+# 将上级目录添加到系统路径，以便导入 PatchSTG 模块
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import torch
@@ -10,6 +11,7 @@ import argparse
 import logging
 
 def setup_logger(log_path=None):
+    """配置日志记录器"""
     handlers = [logging.StreamHandler(sys.stdout)]
     if log_path:
         handlers.append(logging.FileHandler(log_path))
@@ -21,6 +23,7 @@ def setup_logger(log_path=None):
     )
 
 def load_config(config_path):
+    """加载 YAML 配置文件"""
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
@@ -31,6 +34,7 @@ def load_config(config_path):
         raise
 
 def safe_int(x, default=0):
+    """安全地将值转换为整数"""
     try:
         if x is None or (isinstance(x, str) and not x.strip()):
             return default
@@ -38,15 +42,30 @@ def safe_int(x, default=0):
     except Exception:
         return default
 
-class ODPSDynamicTurnDataset(Dataset):
-    """ODPS 动态转向数据集"""
+class ODPSDynamicTurnDataset(torch.utils.data.IterableDataset):
+    """
+    ODPS 动态转向数据集 (流式读取版)
+    继承自 IterableDataset，适用于处理无法一次性加载到内存的大规模数据集。
+    """
     
-    def __init__(self, odps_table, access_id=None, access_key=None, project=None, endpoint=None, limit=None, col_map=None):
+    def __init__(self, odps_table, access_id=None, access_key=None, project=None, endpoint=None, limit=None, col_map=None, buffer_size=1000):
+        """
+        初始化 ODPS 数据集
+        :param odps_table: ODPS 表名
+        :param access_id: 阿里云 AccessKey ID
+        :param access_key: 阿里云 AccessKey Secret
+        :param project: ODPS 项目名
+        :param endpoint: ODPS Endpoint
+        :param limit: 限制读取的记录数 (用于测试)
+        :param col_map: 列名映射配置 (JSON 字符串或字典)
+        :param buffer_size: 缓冲区大小 (当前未使用，保留参数)
+        """
         try:
             from odps import ODPS
         except Exception:
             raise RuntimeError('pyodps 未安装，请 pip install pyodps')
         
+        # 优先使用传入的参数，否则尝试从环境变量获取
         access_id = access_id or os.environ.get('ODPS_ACCESS_ID')
         access_key = access_key or os.environ.get('ODPS_ACCESS_KEY')
         project = project or os.environ.get('ODPS_PROJECT')
@@ -59,74 +78,30 @@ class ODPSDynamicTurnDataset(Dataset):
         self.table = self.odps.get_table(odps_table)
         self.limit = limit
         self.col_map = col_map
-        self._rows = None
+        self.buffer_size = buffer_size
         
-        # 获取列名到索引的映射
+        # 获取列名到索引的映射，用于后续快速访问
         self.column_names = [col.name for col in self.table.table_schema.columns]
         self.col_idx_map = {name: idx for idx, name in enumerate(self.column_names)}
         
         logging.info(f"表列名: {self.column_names}")
-        
-        self._load_rows()
+        logging.info(f"已初始化流式数据集，limit={self.limit}")
 
-    def _load_rows(self):
-        """加载数据行"""
-        self._rows = []
-        
-        logging.info(f"开始加载数据，limit={self.limit}...")
-        
-        try:
-            with self.table.open_reader() as reader:
-                for i, record in enumerate(reader):
-                    if self.limit and i >= self.limit:
-                        break
-                    
-                    try:
-                        # 使用索引访问 Record（不是 rec.get()）
-                        row = {}
-                        for col_name in self.column_names:
-                            col_idx = self.col_idx_map[col_name]
-                            row[col_name] = record[col_idx]
-                        
-                        # 应用列名映射（如果有）
-                        if self.col_map:
-                            import json
-                            mapd = json.loads(self.col_map) if isinstance(self.col_map, str) else self.col_map
-                            row = {mapd.get(k, k): v for k, v in row.items()}
-                        
-                        self._rows.append(row)
-                        
-                        # 每1000条打印进度
-                        if (i + 1) % 1000 == 0:
-                            logging.info(f"  已加载 {i + 1} 条...")
-                            
-                    except Exception as e:
-                        logging.error(f"处理第 {i} 条记录时出错: {e}")
-                        logging.error(f"Record 类型: {type(record)}")
-                        logging.error(f"Record 可用方法: {[m for m in dir(record) if not m.startswith('_')]}")
-                        raise
-            
-            logging.info(f"数据加载完成，共 {len(self._rows)} 条")
-            
-        except Exception as e:
-            logging.error(f"_load_rows 失败: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            raise
-
-    def __len__(self):
-        return len(self._rows) if self._rows else 0
-
-    def __getitem__(self, idx):
-        row = self._rows[idx]
-        
-        # 解析 input_flows
+    def _parse_record(self, row):
+        """
+        解析单条 ODPS 记录为模型所需的格式
+        :param row: 包含列名和值的字典
+        :return: 解析后的样本字典
+        """
+        # 1. 解析 input_flows (交通流量数据)
+        # 格式假设为: "v1,v2,...; v1,v2,..." (分号分隔不同节点/组，逗号分隔时间步)
         input_flows = row.get('input_flows', '')
         groups = [g.strip() for g in str(input_flows).split(';') if g.strip()]
         
         node_arrays = []
         for g in groups:
             vals = [v.strip() for v in g.split(',')]
+            # 确保每个节点有 13 个时间步的数据 (前12个为历史，第13个为标签)
             if len(vals) < 13:
                 vals = vals + ['0'] * (13 - len(vals))
             else:
@@ -139,29 +114,32 @@ class ODPSDynamicTurnDataset(Dataset):
         
         node_arrays = np.array(node_arrays, dtype=np.float32)
         
-        # 解析时间特征
+        # 2. 解析 time_features (时间特征)
+        # 格式假设与 input_flows 类似
         time_feats = row.get('time_features', '')
         segs = [s.strip() for s in str(time_feats).split(';') if s.strip()]
         
         time_feats_arr = []
         for seg in segs:
             parts = seg.split()
+            # 每个时间步应有 6 个特征 (weekday, hour, minute, day_type, day, month)
             if len(parts) >= 6:
                 nums = [float(x) for x in parts[:6]]
             else:
                 nums = [float(x) for x in parts] + [0.0] * (6 - len(parts))
             time_feats_arr.append(nums)
         
-        # 补齐到13个时间步
+        # 补齐到 13 个时间步
         while len(time_feats_arr) < 13:
             time_feats_arr.append([0.0] * 6)
         
         time_feats_arr = np.array(time_feats_arr[:13], dtype=np.float32)
         
-        # label: 第一组的第13个值
+        # 3. 提取标签 (Label)
+        # 假设取第一个节点的第 13 个时间步的值作为预测目标
         label = float(node_arrays[0, 12]) if node_arrays.shape[0] > 0 else 0.0
         
-        # 其他字段
+        # 4. 解析其他元数据
         node_count = safe_int(row.get('node_count'), node_arrays.shape[0])
         sample_id = str(row.get('sample_id', ''))
         adcode = safe_int(row.get('adcode'), 0)
@@ -177,40 +155,93 @@ class ODPSDynamicTurnDataset(Dataset):
             'sample_date': sample_date
         }
 
+    def __iter__(self):
+        """
+        迭代器方法，实现流式读取
+        """
+        worker_info = torch.utils.data.get_worker_info()
+        
+        # 简单的单进程/多进程切分策略
+        # 注意：ODPS open_reader 可能不支持高效的随机 seek，这里假设 num_workers=0 或 1
+        # 如果必须多 worker，建议在 ODPS 侧预先分片或使用 tunnel 的分片读取功能
+        
+        if worker_info is not None and worker_info.num_workers > 1:
+            logging.warning("ODPS 流式读取在多 worker 模式下可能需要更复杂的切分策略，当前仅建议 num_workers=0")
+        
+        count = 0
+        try:
+            # 打开 ODPS 表读取器
+            with self.table.open_reader() as reader:
+                for record in reader:
+                    if self.limit and count >= self.limit:
+                        break
+                    
+                    try:
+                        # 将 Record 对象转换为字典
+                        row = {}
+                        for col_name in self.column_names:
+                            col_idx = self.col_idx_map[col_name]
+                            row[col_name] = record[col_idx]
+                        
+                        # 应用列名映射（如果有）
+                        if self.col_map:
+                            import json
+                            mapd = json.loads(self.col_map) if isinstance(self.col_map, str) else self.col_map
+                            row = {mapd.get(k, k): v for k, v in row.items()}
+                        
+                        # 解析并 yield 数据
+                        yield self._parse_record(row)
+                        count += 1
+                        
+                    except Exception as e:
+                        logging.error(f"解析记录失败: {e}")
+                        continue
+                        
+        except Exception as e:
+            logging.error(f"ODPS 读取流中断: {e}")
+            raise
+
 def dynamic_turn_collate_fn(batch):
-    """自定义 collate 函数"""
-    # We treat the first 12 minutes as input (history) and the 13th minute as label
+    """
+    自定义 Collate 函数，用于将一个批次的样本整理成模型输入的 Tensor
+    处理变长的节点数量 (通过 padding)
+    """
+    # 找出该批次中最大的节点数
     max_nodes = int(max(item['node_count'] for item in batch))
     batch_size = len(batch)
 
-    # input_flows: (B, max_nodes, 13)
+    # 初始化 input_flows 容器: [B, max_nodes, 13]
     input_flows = np.zeros((batch_size, max_nodes, 13), dtype=np.float32)
+    # 初始化掩码 mask: [B, max_nodes] (1 表示真实节点，0 表示 padding)
     mask = np.zeros((batch_size, max_nodes), dtype=np.float32)
+    
     for i, item in enumerate(batch):
         n = int(item['node_count'])
         actual_n = min(n, item['input_flows'].shape[0])
+        # 填充数据
         input_flows[i, :actual_n, :] = item['input_flows'][:actual_n, :]
+        # 设置掩码
         mask[i, :actual_n] = 1.0
 
-    # Build x: history 12 steps -> [B, 12, N, 1]
+    # 构建模型输入 x: 取前 12 个时间步作为历史输入
     hist_steps = 12
     x_np = input_flows[:, :, :hist_steps]  # [B, N, 12]
     x_np = np.transpose(x_np, (0, 2, 1))   # [B, 12, N]
     x_np = x_np[..., np.newaxis]           # [B, 12, N, 1]
 
-    # time_features: (B, 13, 6) -> take first 12 rows and broadcast to nodes -> [B,12,N,6]
+    # 构建时间特征 te: [B, 13, 6] -> 取前 12 步并广播到所有节点 -> [B, 12, N, 6]
     time_features = np.stack([item['time_features'] for item in batch], axis=0)  # [B, 13, 6]
-    te_np = time_features[:, :hist_steps, :]  # [B,12,6]
-    te_np = np.expand_dims(te_np, 2)  # [B,12,1,6]
-    te_np = np.repeat(te_np, max_nodes, axis=2)  # [B,12,N,6]
+    te_np = time_features[:, :hist_steps, :]  # [B, 12, 6]
+    te_np = np.expand_dims(te_np, 2)          # [B, 12, 1, 6]
+    te_np = np.repeat(te_np, max_nodes, axis=2)  # [B, 12, N, 6]
 
-    # labels: take the 13th minute (index 12) per node -> [B, N, 1]
+    # 构建标签 labels: 取第 13 个时间步 (索引 12) -> [B, N, 1]
     label_np = input_flows[:, :, hist_steps]  # [B, N]
     label_np = label_np[..., np.newaxis].astype(np.float32)  # [B, N, 1]
 
     adcodes = np.array([item['adcode'] for item in batch], dtype=np.int64)
 
-    # convert to tensors
+    # 转换为 PyTorch Tensor
     x = torch.from_numpy(x_np).float()
     te = torch.from_numpy(te_np).long()
     mask = torch.from_numpy(mask).float()
@@ -223,7 +254,7 @@ def main():
     parser = argparse.ArgumentParser(description='ODPS 流式 PatchSTG demo')
     parser.add_argument('--config', type=str, default=None, help='YAML 配置文件路径')
     parser.add_argument('--log', type=str, default=None, help='日志文件路径')
-    parser.add_argument('--device', type=str, default='cpu', help='device')
+    parser.add_argument('--device', type=str, default='cpu', help='运行设备')
     args = parser.parse_args()
 
     # 日志初始化
@@ -252,7 +283,7 @@ def main():
     except Exception as e:
         logging.warning(f'无法使用 ODPS 数据集（{e}），回退到伪数据用于演示')
 
-    # 如果没有真实 dataset，则构造一个小的 synthetic dataset
+    # 如果没有真实 dataset，则构造一个小的合成数据集 (SyntheticDataset)
     if dataset is None:
         class SyntheticDataset(Dataset):
             def __init__(self, samples=8, max_nodes=4):
@@ -336,7 +367,7 @@ def main():
     model.eval()
     with torch.no_grad():
         pred = model(x_t, te_t, mask_t)  # [B, T, N, out_dim]
-    logging.info(f'model pred shape: {pred.shape}')
+    logging.info(f'模型预测输出 shape: {pred.shape}')
 
     # 取最后一步预测并计算 mse
     pred_last = pred[:, -1, :, :]
@@ -345,7 +376,7 @@ def main():
         pred_val = pred_last[..., 0]
         label_val = labels_t[..., 0]
         mse = torch.nn.functional.mse_loss(pred_val, label_val)
-        logging.info(f'Simple MSE between pred_last and label: {mse.item():.6f}')
+        logging.info(f'预测值与标签的简单 MSE 损失: {mse.item():.6f}')
     except Exception as e:
         logging.warning(f'计算 loss 失败: {e}')
 
@@ -353,4 +384,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
